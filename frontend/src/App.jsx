@@ -1,7 +1,6 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 
 import ThemeProvider from "./providers/ThemeProvider";
-
 import Shell from "./layouts/Shell";
 
 import Live from "./pages/Live/Live";
