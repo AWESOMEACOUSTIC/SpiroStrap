@@ -1,16 +1,15 @@
-// Interface-like contract for data sources.
-// Implementations should provide connect(), disconnect(), and onSample(callback).
+/**
+ * @typedef {Object} BreathSample
+ * @property {number} ts - Unix ms timestamp
+ * @property {number} value - normalized signal value
+ * @property {number} quality - 0..1 signal quality
+ */
 
-export class IDataSource {
-  async connect() {
-    throw new Error("Not implemented");
-  }
+/**
+ * @interface
+ * start(): void
+ * stop(): void
+ * onSample: (sample: BreathSample) => void
+ */
 
-  async disconnect() {
-    throw new Error("Not implemented");
-  }
-
-  onSample(_callback) {
-    throw new Error("Not implemented");
-  }
-}
+export {};
