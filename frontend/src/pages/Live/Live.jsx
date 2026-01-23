@@ -4,7 +4,8 @@ import { useAppStore } from "../../state/store";
 import {
   selectLastSample,
   selectSamples,
-  selectSessionMeta,
+  selectSessionId,
+  selectStartedAt,
   selectStreaming
 } from "../../state/selectors";
 
@@ -56,7 +57,8 @@ function MiniSparkline({ samples }) {
 
 export default function Live() {
   const streaming = useAppStore(selectStreaming);
-  const { sessionId, startedAt } = useAppStore(selectSessionMeta);
+  const sessionId = useAppStore(selectSessionId);
+  const startedAt = useAppStore(selectStartedAt);
   const samples = useAppStore(selectSamples);
   const last = useAppStore(selectLastSample);
 
@@ -84,7 +86,9 @@ export default function Live() {
 
         <div className="rounded-lg border border-slate-800/70 bg-slate-900/30 p-4">
           <div className="text-xs text-slate-400">Started</div>
-          <div className="mt-1 text-sm font-semibold">{formatTs(startedAt)}</div>
+          <div className="mt-1 text-sm font-semibold">
+            {formatTs(startedAt)}
+          </div>
         </div>
 
         <div className="rounded-lg border border-slate-800/70 bg-slate-900/30 p-4">
