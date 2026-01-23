@@ -22,7 +22,7 @@ function NavItem({ to, label, end = false }) {
 
 export default function Sidebar() {
   return (
-    <aside className="hidden w-64 shrink-0 border-r border-slate-800/70 bg-slate-950/60 p-4 md:block">
+    <aside className="hidden w-54 shrink-0 border-r border-slate-800/70 bg-slate-950/60 p-4 md:block">
       <div className="mb-6">
         <div className="text-lg font-semibold tracking-tight">SpiroStrap</div>
         <div className="text-xs text-slate-400">Breathing Dashboard</div>

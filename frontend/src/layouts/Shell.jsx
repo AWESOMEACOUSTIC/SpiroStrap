@@ -10,7 +10,7 @@ export default function Shell() {
 
   return (
     <div className="min-h-dvh bg-slate-950 text-slate-100">
-      <div className="mx-auto flex min-h-dvh max-w-7xl">
+      <div className="mx-auto flex min-h-dvh max-w-8xl">
         <Sidebar />
 
         <div className="flex min-w-0 flex-1 flex-col">
