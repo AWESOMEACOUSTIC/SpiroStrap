@@ -1,7 +1,30 @@
-import React from 'react'
+import { Outlet, useLocation } from "react-router-dom";
+import { AnimatePresence } from "framer-motion";
 
-export const Shell = () => {
+import Sidebar from "./Sidebar";
+import Topbar from "./Topbar";
+import PageTransition from "./PageTransition";
+
+export default function Shell() {
+  const location = useLocation();
+
   return (
-    <div>Shell</div>
-  )
+    <div className="min-h-dvh bg-slate-950 text-slate-100">
+      <div className="mx-auto flex min-h-dvh max-w-7xl">
+        <Sidebar />
+
+        <div className="flex min-w-0 flex-1 flex-col">
+          <Topbar />
+
+          <main className="min-w-0 flex-1 p-4 md:p-6">
+            <AnimatePresence mode="wait" initial={false}>
+              <PageTransition key={location.pathname}>
+                <Outlet />
+              </PageTransition>
+            </AnimatePresence>
+          </main>
+        </div>
+      </div>
+    </div>
+  );
 }
