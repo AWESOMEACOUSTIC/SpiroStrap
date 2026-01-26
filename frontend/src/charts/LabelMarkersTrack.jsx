@@ -4,12 +4,12 @@ import { labelToColor } from "../domain/models/labels";
 export default function LabelMarkersTrack({
   windows,
   rangeSeconds = 120,
-  height = 44
+  height = 44,
+  endTs
 }) {
   const { dots, minTs, maxTs } = useMemo(() => {
-    const now = Date.now();
-    const minTs = now - rangeSeconds * 1000;
-    const maxTs = now;
+    const maxTs = endTs ?? Date.now();
+    const minTs = maxTs - rangeSeconds * 1000;
 
     const filtered = windows.filter((w) => w.tsEnd >= minTs && w.tsEnd <= maxTs);
 
@@ -18,7 +18,7 @@ export default function LabelMarkersTrack({
       maxTs,
       dots: filtered
     };
-  }, [windows, rangeSeconds]);
+  }, [windows, rangeSeconds, endTs]);
 
   const w = 600;
   const h = height;
@@ -31,7 +31,6 @@ export default function LabelMarkersTrack({
         style={{ height }}
         preserveAspectRatio="none"
       >
-        {/* baseline */}
         <line
           x1="0"
           y1={h / 2}
@@ -42,12 +41,12 @@ export default function LabelMarkersTrack({
         />
 
         {dots.map((d) => {
-          const x =
-            ((d.tsEnd - minTs) / Math.max(1, maxTs - minTs)) * w;
+          const denom = Math.max(1, maxTs - minTs);
+          const x = ((d.tsEnd - minTs) / denom) * w;
 
           return (
             <circle
-              key={d.tsEnd}
+              key={`${d.sessionId ?? "sess"}_${d.tsEnd}`}
               cx={x}
               cy={h / 2}
               r="5"
