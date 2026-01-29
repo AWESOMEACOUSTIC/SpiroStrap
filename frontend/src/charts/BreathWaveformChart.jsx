@@ -1,25 +1,30 @@
 import { useMemo } from "react";
 
-export default function BreathWaveformChart({ samples, height = 120 }) {
-  const points = useMemo(() => {
-    const slice = samples.slice(-250);
-    if (slice.length < 2) return "";
-
-    const values = slice.map((s) => s.value);
-    const min = Math.min(...values);
-    const max = Math.max(...values);
-    const range = Math.max(1e-6, max - min);
+export default function BreathWaveformChart({ samples, height = 140 }) {
+  const { points } = useMemo(() => {
+    if (!samples || samples.length < 2) return { points: "" };
 
     const w = 600;
     const h = height;
 
-    return slice
-      .map((s, i) => {
-        const x = (i / (slice.length - 1)) * w;
-        const y = h - ((s.value - min) / range) * h;
+    const values = samples.map((s) => s.value);
+    const minV = Math.min(...values);
+    const maxV = Math.max(...values);
+    const rangeV = Math.max(1e-6, maxV - minV);
+
+    const minTs = samples[0].ts;
+    const maxTs = samples[samples.length - 1].ts;
+    const rangeTs = Math.max(1, maxTs - minTs);
+
+    const points = samples
+      .map((s) => {
+        const x = ((s.ts - minTs) / rangeTs) * w;
+        const y = h - ((s.value - minV) / rangeV) * h;
         return `${x.toFixed(2)},${y.toFixed(2)}`;
       })
       .join(" ");
+
+    return { points };
   }, [samples, height]);
 
   return (
