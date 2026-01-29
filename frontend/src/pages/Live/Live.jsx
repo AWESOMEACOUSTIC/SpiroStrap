@@ -126,7 +126,7 @@ export default function Live() {
 
         <div className="space-y-3">
           <LabelMarkersTrack windows={windows} rangeSeconds={120} height={44} />
-          <BreathWaveformChart samples={samples} height={120} />
+          <BreathWaveformChart samples={samples.slice(-250)} height={120} /> 
         </div>
       </div>
     </div>
