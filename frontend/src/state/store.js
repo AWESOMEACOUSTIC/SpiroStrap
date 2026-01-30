@@ -19,8 +19,9 @@ function makeSessionId() {
   )}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
 
-const LIVE_SAMPLES_MAX = 5000; // UI buffer only
-const LIVE_WINDOWS_MAX = 3600; // UI buffer only
+const LIVE_SAMPLES_MAX = 5000;
+const LIVE_WINDOWS_MAX = 3600;
+const LIVE_EVENTS_MAX = 200;
 
 const WINDOW_MS = 10_000;
 const STEP_MS = 1_000;
@@ -28,34 +29,41 @@ const STEP_MS = 1_000;
 const FLUSH_MS = 2_000;
 const FLUSH_SAMPLES_MAX = 250;
 const FLUSH_WINDOWS_MAX = 10;
+const FLUSH_EVENTS_MAX = 5;
 
-// Non-reactive pending queues (avoid re-rendering the app on every pending push)
+const EVENT_END_COOLDOWN_SECONDS = 5;
+
 let pendingSamples = [];
 let pendingWindows = [];
+let pendingEvents = [];
 let flushInFlight = false;
 
 async function flushPending(sessionId) {
   if (!sessionId) return;
   if (flushInFlight) return;
-
-  if (!pendingSamples.length && !pendingWindows.length) return;
+  if (!pendingSamples.length && !pendingWindows.length && !pendingEvents.length)
+    return;
 
   flushInFlight = true;
 
   const samplesToWrite = pendingSamples;
   const windowsToWrite = pendingWindows;
+  const eventsToWrite = pendingEvents;
+
   pendingSamples = [];
   pendingWindows = [];
+  pendingEvents = [];
 
   try {
     await Promise.all([
       storage.addSamples(sessionId, samplesToWrite),
-      storage.addWindows(sessionId, windowsToWrite)
+      storage.addWindows(sessionId, windowsToWrite),
+      storage.addEvents(sessionId, eventsToWrite)
     ]);
   } catch (err) {
-    // Re-queue on failure so we don't lose data
     pendingSamples = samplesToWrite.concat(pendingSamples);
     pendingWindows = windowsToWrite.concat(pendingWindows);
+    pendingEvents = eventsToWrite.concat(pendingEvents);
     // eslint-disable-next-line no-console
     console.error("Flush failed, re-queued pending data:", err);
   } finally {
@@ -63,22 +71,37 @@ async function flushPending(sessionId) {
   }
 }
 
+function buildEventSummary(openEvent) {
+  const redSeconds = openEvent.count;
+  const avgScore = openEvent.count ? openEvent.scoreSum / openEvent.count : 0;
+
+  return {
+    startTs: openEvent.startTs,
+    endTs: openEvent.endTs,
+    type: "IRREGULARITY_SUSTAINED",
+    severity: Math.max(openEvent.maxScore, avgScore),
+    maxScore: openEvent.maxScore,
+    avgScore,
+    redSeconds
+  };
+}
+
 export const useAppStore = create((set, get) => ({
   streaming: false,
   sessionId: null,
   startedAt: null,
 
-  // Live UI buffers
   samples: [],
   lastSample: null,
+
   windows: [],
   lastWindow: null,
 
-  // Live derived
+  events: [],
+
   currentLabel: Label.GREEN,
   currentScore: 0,
 
-  // Summary counters (stored into session on stop)
   totalSamples: 0,
   totalWindows: 0,
   labelSeconds: {
@@ -87,11 +110,13 @@ export const useAppStore = create((set, get) => ({
     [Label.RED]: 0
   },
 
-  // Sustained logic streak counters
   _streakHigh: 0,
   _streakVeryHigh: 0,
 
-  // Runtime refs
+  // event state
+  _openEvent: null,
+  _nonRedStreak: 0,
+
   _source: null,
   _windowTimer: null,
   _flushTimer: null,
@@ -99,9 +124,9 @@ export const useAppStore = create((set, get) => ({
   async startStreaming() {
     if (get().streaming) return;
 
-    // Reset pending queues
     pendingSamples = [];
     pendingWindows = [];
+    pendingEvents = [];
 
     const sessionId = makeSessionId();
     const startedAt = Date.now();
@@ -114,6 +139,7 @@ export const useAppStore = create((set, get) => ({
       lastSample: null,
       windows: [],
       lastWindow: null,
+      events: [],
       currentLabel: Label.GREEN,
       currentScore: 0,
       totalSamples: 0,
@@ -124,10 +150,11 @@ export const useAppStore = create((set, get) => ({
         [Label.RED]: 0
       },
       _streakHigh: 0,
-      _streakVeryHigh: 0
+      _streakVeryHigh: 0,
+      _openEvent: null,
+      _nonRedStreak: 0
     });
 
-    // Create session record in IndexedDB
     await storage.createSession({
       sessionId,
       startedAt,
@@ -162,11 +189,7 @@ export const useAppStore = create((set, get) => ({
       void storage.updateSession(sessionId, { updatedAt: Date.now() });
     }, FLUSH_MS);
 
-    set({
-      _source: source,
-      _windowTimer: windowTimer,
-      _flushTimer: flushTimer
-    });
+    set({ _source: source, _windowTimer: windowTimer, _flushTimer: flushTimer });
   },
 
   async stopStreaming() {
@@ -176,13 +199,24 @@ export const useAppStore = create((set, get) => ({
     const source = get()._source;
     if (source) source.stop();
 
-    const windowTimer = get()._windowTimer;
-    if (windowTimer) clearInterval(windowTimer);
+    if (get()._windowTimer) clearInterval(get()._windowTimer);
+    if (get()._flushTimer) clearInterval(get()._flushTimer);
 
-    const flushTimer = get()._flushTimer;
-    if (flushTimer) clearInterval(flushTimer);
+    // Close any open event
+    const open = get()._openEvent;
+    if (open) {
+      const lastEnd = get().lastWindow?.tsEnd ?? Date.now();
+      const closed = buildEventSummary({ ...open, endTs: lastEnd });
+      pendingEvents.push(closed);
 
-    // Final flush
+      // also keep in live list
+      const prev = get().events;
+      const next =
+        prev.length >= LIVE_EVENTS_MAX ? prev.slice(1) : prev.slice();
+      next.push(closed);
+      set({ events: next, _openEvent: null, _nonRedStreak: 0 });
+    }
+
     await flushPending(sessionId);
 
     const endedAt = Date.now();
@@ -195,7 +229,8 @@ export const useAppStore = create((set, get) => ({
       totalWindows,
       greenSeconds: labelSeconds[Label.GREEN],
       yellowSeconds: labelSeconds[Label.YELLOW],
-      redSeconds: labelSeconds[Label.RED]
+      redSeconds: labelSeconds[Label.RED],
+      eventCount: (await storage.getEvents(sessionId)).length
     };
 
     await storage.updateSession(sessionId, {
@@ -213,13 +248,11 @@ export const useAppStore = create((set, get) => ({
   },
 
   pushSample(sample) {
-    // Add to DB queue
     pendingSamples.push(sample);
     if (pendingSamples.length >= FLUSH_SAMPLES_MAX) {
       void flushPending(get().sessionId);
     }
 
-    // Add to UI rolling buffer
     const prev = get().samples;
     const next = prev.length >= LIVE_SAMPLES_MAX ? prev.slice(1) : prev.slice();
     next.push(sample);
@@ -260,13 +293,11 @@ export const useAppStore = create((set, get) => ({
       label: res.label
     };
 
-    // Queue for DB
     pendingWindows.push(nextWindow);
     if (pendingWindows.length >= FLUSH_WINDOWS_MAX) {
       void flushPending(get().sessionId);
     }
 
-    // Add to UI rolling buffer
     const prevWindows = get().windows;
     const nextWindows =
       prevWindows.length >= LIVE_WINDOWS_MAX
@@ -275,16 +306,75 @@ export const useAppStore = create((set, get) => ({
 
     nextWindows.push(nextWindow);
 
-    // Backfill for RED confirmation
+    // Backfill RED windows
+    let redStartTsForEvent = null;
     if (res.label === Label.RED && res.backfillCount > 1) {
       for (let i = 0; i < res.backfillCount; i++) {
         const idx = nextWindows.length - 1 - i;
         if (idx < 0) break;
         nextWindows[idx] = { ...nextWindows[idx], label: Label.RED };
       }
+
+      const earliestIdx = nextWindows.length - res.backfillCount;
+      if (earliestIdx >= 0) redStartTsForEvent = nextWindows[earliestIdx].tsStart;
     }
 
+    // -------- Event segmentation logic --------
     const currentLabel = nextWindow.label;
+
+    if (currentLabel === Label.RED) {
+      const open = get()._openEvent;
+
+      if (!open) {
+        const startForEvent = redStartTsForEvent ?? nextWindow.tsStart;
+
+        set({
+          _openEvent: {
+            startTs: startForEvent,
+            endTs: nextWindow.tsEnd,
+            maxScore: score,
+            scoreSum: score,
+            count: 1
+          },
+          _nonRedStreak: 0
+        });
+      } else {
+        set({
+          _openEvent: {
+            ...open,
+            endTs: nextWindow.tsEnd,
+            maxScore: Math.max(open.maxScore, score),
+            scoreSum: open.scoreSum + score,
+            count: open.count + 1
+          },
+          _nonRedStreak: 0
+        });
+      }
+    } else {
+      const open = get()._openEvent;
+      if (open) {
+        const nextNonRed = get()._nonRedStreak + 1;
+
+        if (nextNonRed >= EVENT_END_COOLDOWN_SECONDS) {
+          const closed = buildEventSummary(open);
+          pendingEvents.push(closed);
+          if (pendingEvents.length >= FLUSH_EVENTS_MAX) {
+            void flushPending(get().sessionId);
+          }
+
+          const prev = get().events;
+          const next =
+            prev.length >= LIVE_EVENTS_MAX ? prev.slice(1) : prev.slice();
+          next.push(closed);
+
+          set({ events: next, _openEvent: null, _nonRedStreak: 0 });
+        } else {
+          set({ _nonRedStreak: nextNonRed });
+        }
+      }
+    }
+    // ----------------------------------------
+
     const prevLabelSeconds = get().labelSeconds;
 
     set({
