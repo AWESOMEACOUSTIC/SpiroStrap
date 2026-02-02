@@ -8,7 +8,7 @@ import LabelMarkersTrack from "../../charts/LabelMarkersTrack";
 import BreathWaveformChart from "../../charts/BreathWaveformChart";
 import Legend from "../../charts/Legend";
 
-import ExportButtons from "./components/ExportButtons";
+import ExportButtons from "./components/ExportButton";
 import EventList from "./components/EventList";
 
 function formatDateTime(ts) {
