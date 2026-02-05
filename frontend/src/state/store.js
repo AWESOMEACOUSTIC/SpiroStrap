@@ -41,8 +41,9 @@ let flushInFlight = false;
 async function flushPending(sessionId) {
   if (!sessionId) return;
   if (flushInFlight) return;
-  if (!pendingSamples.length && !pendingWindows.length && !pendingEvents.length)
+  if (!pendingSamples.length && !pendingWindows.length && !pendingEvents.length) {
     return;
+  }
 
   flushInFlight = true;
 
@@ -117,9 +118,15 @@ export const useAppStore = create((set, get) => ({
   _openEvent: null,
   _nonRedStreak: 0,
 
+  // runtime refs
   _source: null,
   _windowTimer: null,
   _flushTimer: null,
+
+  // teardown hardening (Phase G)
+  _teardownBound: false,
+  _onBeforeUnload: null,
+  _onVisibilityChange: null,
 
   async startStreaming() {
     if (get().streaming) return;
@@ -189,7 +196,47 @@ export const useAppStore = create((set, get) => ({
       void storage.updateSession(sessionId, { updatedAt: Date.now() });
     }, FLUSH_MS);
 
-    set({ _source: source, _windowTimer: windowTimer, _flushTimer: flushTimer });
+    set({
+      _source: source,
+      _windowTimer: windowTimer,
+      _flushTimer: flushTimer
+    });
+
+    // ---- Phase G: Safe teardown on refresh/close ----
+    if (!get()._teardownBound) {
+      const onBeforeUnload = () => {
+        try {
+          const sid = get().sessionId;
+          const src = get()._source;
+          if (src) src.stop();
+          void flushPending(sid);
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.error("beforeunload teardown error:", e);
+        }
+      };
+
+      const onVisibilityChange = () => {
+        if (document.visibilityState === "hidden") {
+          try {
+            void flushPending(get().sessionId);
+          } catch (e) {
+            // eslint-disable-next-line no-console
+            console.error("visibilitychange flush error:", e);
+          }
+        }
+      };
+
+      window.addEventListener("beforeunload", onBeforeUnload);
+      document.addEventListener("visibilitychange", onVisibilityChange);
+
+      set({
+        _teardownBound: true,
+        _onBeforeUnload: onBeforeUnload,
+        _onVisibilityChange: onVisibilityChange
+      });
+    }
+    // -----------------------------------------------
   },
 
   async stopStreaming() {
@@ -202,6 +249,23 @@ export const useAppStore = create((set, get) => ({
     if (get()._windowTimer) clearInterval(get()._windowTimer);
     if (get()._flushTimer) clearInterval(get()._flushTimer);
 
+    // Unbind teardown handlers (Phase G)
+    const onBeforeUnload = get()._onBeforeUnload;
+    const onVisibilityChange = get()._onVisibilityChange;
+
+    if (onBeforeUnload) {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    }
+    if (onVisibilityChange) {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    }
+
+    set({
+      _teardownBound: false,
+      _onBeforeUnload: null,
+      _onVisibilityChange: null
+    });
+
     // Close any open event
     const open = get()._openEvent;
     if (open) {
@@ -209,11 +273,11 @@ export const useAppStore = create((set, get) => ({
       const closed = buildEventSummary({ ...open, endTs: lastEnd });
       pendingEvents.push(closed);
 
-      // also keep in live list
       const prev = get().events;
       const next =
         prev.length >= LIVE_EVENTS_MAX ? prev.slice(1) : prev.slice();
       next.push(closed);
+
       set({ events: next, _openEvent: null, _nonRedStreak: 0 });
     }
 
@@ -316,7 +380,9 @@ export const useAppStore = create((set, get) => ({
       }
 
       const earliestIdx = nextWindows.length - res.backfillCount;
-      if (earliestIdx >= 0) redStartTsForEvent = nextWindows[earliestIdx].tsStart;
+      if (earliestIdx >= 0) {
+        redStartTsForEvent = nextWindows[earliestIdx].tsStart;
+      }
     }
 
     // -------- Event segmentation logic --------
