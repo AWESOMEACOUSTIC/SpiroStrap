@@ -4,6 +4,7 @@ import { AnimatePresence } from "framer-motion";
 import Sidebar from "./Sidebar";
 import Topbar from "./Topbar";
 import PageTransition from "./PageTransition";
+import ErrorBoundary from "../components/ErrorBoundary";
 
 export default function Shell() {
   const location = useLocation();
@@ -19,7 +20,9 @@ export default function Shell() {
           <main className="min-w-0 flex-1 p-4 md:p-6">
             <AnimatePresence mode="wait" initial={false}>
               <PageTransition key={location.pathname}>
-                <Outlet />
+                <ErrorBoundary>
+                  <Outlet />
+                </ErrorBoundary>
               </PageTransition>
             </AnimatePresence>
           </main>
