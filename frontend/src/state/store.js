@@ -5,11 +5,9 @@ import { storage } from "../services/storage/storage";
 
 import { computeIrregularityScore } from "../domain/classifier/computeIrregularityScore";
 import { getWindowSamples } from "../domain/classifier/windowing";
-import {
-  DEFAULT_THRESHOLDS,
-  nextLabelWithSustainedLogic
-} from "../domain/classifier/sustainedLogic";
+import { nextLabelWithSustainedLogic } from "../domain/classifier/sustainedLogic";
 import { Label } from "../domain/models/labels";
+import { useSettingsStore } from "./settingsStore";
 
 function makeSessionId() {
   const d = new Date();
@@ -23,15 +21,10 @@ const LIVE_SAMPLES_MAX = 5000;
 const LIVE_WINDOWS_MAX = 3600;
 const LIVE_EVENTS_MAX = 200;
 
-const WINDOW_MS = 10_000;
-const STEP_MS = 1_000;
-
-const FLUSH_MS = 2_000;
+const FLUSH_MS_DEFAULT = 2_000;
 const FLUSH_SAMPLES_MAX = 250;
 const FLUSH_WINDOWS_MAX = 10;
 const FLUSH_EVENTS_MAX = 5;
-
-const EVENT_END_COOLDOWN_SECONDS = 5;
 
 let pendingSamples = [];
 let pendingWindows = [];
@@ -123,13 +116,19 @@ export const useAppStore = create((set, get) => ({
   _windowTimer: null,
   _flushTimer: null,
 
-  // teardown hardening (Phase G)
+  // teardown hardening
   _teardownBound: false,
   _onBeforeUnload: null,
   _onVisibilityChange: null,
 
+  // settings snapshot used for this session
+  _cfg: null,
+
   async startStreaming() {
     if (get().streaming) return;
+
+    // Load the current config snapshot (sanitized)
+    const cfg = useSettingsStore.getState().config;
 
     pendingSamples = [];
     pendingWindows = [];
@@ -159,26 +158,41 @@ export const useAppStore = create((set, get) => ({
       _streakHigh: 0,
       _streakVeryHigh: 0,
       _openEvent: null,
-      _nonRedStreak: 0
+      _nonRedStreak: 0,
+      _cfg: cfg
     });
+
+    // Derive thresholds for classifier from cfg
+    const thresholds = {
+      greenMax: cfg.classification.greenMax,
+      // yellowMax is unused in logic; align to highScore for completeness
+      yellowMax: cfg.classification.highScore,
+      highScore: cfg.classification.highScore,
+      veryHighScore: cfg.classification.veryHighScore,
+      sustainedSeconds: cfg.classification.sustainedSeconds,
+      stepSeconds: Math.max(0.25, cfg.classification.stepMs / 1000),
+      fastRedSeconds: cfg.classification.fastRedSeconds
+    };
 
     await storage.createSession({
       sessionId,
       startedAt,
       endedAt: null,
       updatedAt: startedAt,
-      source: "SIMULATOR",
-      sampleRateHz: 25,
-      windowMs: WINDOW_MS,
-      stepMs: STEP_MS,
-      thresholds: DEFAULT_THRESHOLDS,
+      source: cfg.sourceMode,
+      sampleRateHz: cfg.simulator.sampleRateHz, // for simulator now
+      windowMs: cfg.classification.windowMs,
+      stepMs: cfg.classification.stepMs,
+      thresholds,
+      configSnapshot: cfg,
       summary: null
     });
 
     const source = new DummySimulatorSource({
-      sampleRateHz: 25,
-      baseFreqHz: 0.25,
-      noise: 0.02
+      sampleRateHz: cfg.simulator.sampleRateHz,
+      baseFreqHz: cfg.simulator.baseFreqHz,
+      noise: cfg.simulator.noise,
+      testMode: cfg.simulator.testMode
     });
 
     source.onSample = (sample) => {
@@ -187,14 +201,18 @@ export const useAppStore = create((set, get) => ({
 
     source.start();
 
-    const windowTimer = setInterval(() => {
-      get().computeNextWindow();
-    }, STEP_MS);
+    const windowTimer = setInterval(
+      () => {
+        get().computeNextWindow();
+      },
+      Math.max(250, cfg.classification.stepMs)
+    );
 
+    const flushEvery = FLUSH_MS_DEFAULT; // keep simple; could be config.storage later
     const flushTimer = setInterval(() => {
       void flushPending(sessionId);
       void storage.updateSession(sessionId, { updatedAt: Date.now() });
-    }, FLUSH_MS);
+    }, flushEvery);
 
     set({
       _source: source,
@@ -202,7 +220,7 @@ export const useAppStore = create((set, get) => ({
       _flushTimer: flushTimer
     });
 
-    // ---- Phase G: Safe teardown on refresh/close ----
+    // Safe teardown on refresh/close
     if (!get()._teardownBound) {
       const onBeforeUnload = () => {
         try {
@@ -236,7 +254,6 @@ export const useAppStore = create((set, get) => ({
         _onVisibilityChange: onVisibilityChange
       });
     }
-    // -----------------------------------------------
   },
 
   async stopStreaming() {
@@ -249,7 +266,6 @@ export const useAppStore = create((set, get) => ({
     if (get()._windowTimer) clearInterval(get()._windowTimer);
     if (get()._flushTimer) clearInterval(get()._flushTimer);
 
-    // Unbind teardown handlers (Phase G)
     const onBeforeUnload = get()._onBeforeUnload;
     const onVisibilityChange = get()._onVisibilityChange;
 
@@ -277,7 +293,6 @@ export const useAppStore = create((set, get) => ({
       const next =
         prev.length >= LIVE_EVENTS_MAX ? prev.slice(1) : prev.slice();
       next.push(closed);
-
       set({ events: next, _openEvent: null, _nonRedStreak: 0 });
     }
 
@@ -331,10 +346,13 @@ export const useAppStore = create((set, get) => ({
   computeNextWindow() {
     if (!get().streaming) return;
 
+    const cfg = get()._cfg;
+    const windowMs = cfg.classification.windowMs;
+
     const nowTs = Date.now();
     const { startTs, endTs, windowSamples } = getWindowSamples(
       get().samples,
-      WINDOW_MS,
+      windowMs,
       nowTs
     );
 
@@ -342,11 +360,21 @@ export const useAppStore = create((set, get) => ({
 
     const { score, confidence } = computeIrregularityScore(windowSamples);
 
+    const thresholds = {
+      greenMax: cfg.classification.greenMax,
+      yellowMax: cfg.classification.highScore,
+      highScore: cfg.classification.highScore,
+      veryHighScore: cfg.classification.veryHighScore,
+      sustainedSeconds: cfg.classification.sustainedSeconds,
+      stepSeconds: Math.max(0.25, cfg.classification.stepMs / 1000),
+      fastRedSeconds: cfg.classification.fastRedSeconds
+    };
+
     const res = nextLabelWithSustainedLogic(
       score,
       get()._streakHigh,
       get()._streakVeryHigh,
-      DEFAULT_THRESHOLDS
+      thresholds
     );
 
     const nextWindow = {
@@ -380,13 +408,12 @@ export const useAppStore = create((set, get) => ({
       }
 
       const earliestIdx = nextWindows.length - res.backfillCount;
-      if (earliestIdx >= 0) {
-        redStartTsForEvent = nextWindows[earliestIdx].tsStart;
-      }
+      if (earliestIdx >= 0) redStartTsForEvent = nextWindows[earliestIdx].tsStart;
     }
 
-    // -------- Event segmentation logic --------
+    // Event segmentation with configurable cooldown
     const currentLabel = nextWindow.label;
+    const cooldown = Math.max(1, cfg.events.endCooldownSeconds);
 
     if (currentLabel === Label.RED) {
       const open = get()._openEvent;
@@ -421,7 +448,7 @@ export const useAppStore = create((set, get) => ({
       if (open) {
         const nextNonRed = get()._nonRedStreak + 1;
 
-        if (nextNonRed >= EVENT_END_COOLDOWN_SECONDS) {
+        if (nextNonRed >= cooldown) {
           const closed = buildEventSummary(open);
           pendingEvents.push(closed);
           if (pendingEvents.length >= FLUSH_EVENTS_MAX) {
@@ -439,7 +466,6 @@ export const useAppStore = create((set, get) => ({
         }
       }
     }
-    // ----------------------------------------
 
     const prevLabelSeconds = get().labelSeconds;
 
