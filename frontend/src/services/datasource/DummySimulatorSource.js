@@ -7,6 +7,7 @@ export class DummySimulatorSource {
     this.sampleRateHz = opts.sampleRateHz ?? 25;
     this.baseFreqHz = opts.baseFreqHz ?? 0.25; // ~15 BPM
     this.noise = opts.noise ?? 0.02;
+    this.testMode = opts.testMode ?? false;
 
     this.onSample = null;
 
@@ -28,9 +29,13 @@ export class DummySimulatorSource {
       const ts = Date.now();
       const t = (ts - this._t0) / 1000;
 
-      // Occasionally enter an irregular segment.
-      if (Math.random() < 0.002) {
-        const durationMs = 2500 + Math.random() * 14000; // 2.5s - 16.5s
+      // Probability and duration tuned by testMode
+      const pIrreg = this.testMode ? 0.008 : 0.002;
+      const minDur = this.testMode ? 1500 : 2500;
+      const extraDur = this.testMode ? 18000 : 14000;
+
+      if (Math.random() < pIrreg) {
+        const durationMs = minDur + Math.random() * extraDur;
         this._irregularUntil = ts + durationMs;
       }
 
@@ -47,7 +52,8 @@ export class DummySimulatorSource {
         (Math.random() * 2 - 1) * this.noise;
 
       const qualityBase = irregular ? 0.92 : 0.98;
-      const qualityDrop = irregular && Math.random() < 0.06 ? 0.35 : 0;
+      const qDropP = this.testMode ? 0.1 : 0.06;
+      const qualityDrop = irregular && Math.random() < qDropP ? 0.35 : 0;
       const quality = clamp01(qualityBase - qualityDrop);
 
       if (typeof this.onSample === "function") {
