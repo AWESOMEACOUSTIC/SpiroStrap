@@ -16,6 +16,7 @@ import { Label, labelToColor } from "../../domain/models/labels";
 import BreathWaveformChart from "../../charts/BreathWaveformChart";
 import LabelMarkersTrack from "../../charts/LabelMarkersTrack";
 import Legend from "../../charts/Legend";
+import { useSettingsStore } from "../../state/settingsStore";
 
 function formatTs(ts) {
   if (!ts) return "-";
@@ -51,10 +52,20 @@ export default function Live() {
   const currentLabel = useAppStore(selectCurrentLabel);
   const currentScore = useAppStore(selectCurrentScore);
 
+  const liveRangeSeconds = useSettingsStore(
+    (s) => s.config.visualization.liveRangeSeconds
+  );
+
   const qualityText = useMemo(() => {
     if (!last) return "-";
     return `${Math.round((last.quality ?? 1) * 100)}%`;
   }, [last]);
+
+  const liveSamples = useMemo(() => {
+    const endTs = Date.now();
+    const fromTs = endTs - liveRangeSeconds * 1000;
+    return samples.filter((s) => s.ts >= fromTs && s.ts <= endTs);
+  }, [samples, liveRangeSeconds]);
 
   return (
     <div className="space-y-4">
@@ -118,15 +129,19 @@ export default function Live() {
           <div>
             <div className="text-sm font-semibold">Live classification</div>
             <div className="text-xs text-slate-400">
-              Window: 10s • Step: 1s • RED if sustained
+              Window and thresholds from Settings • Range: last {liveRangeSeconds}s
             </div>
           </div>
           <Legend />
         </div>
 
         <div className="space-y-3">
-          <LabelMarkersTrack windows={windows} rangeSeconds={120} height={44} />
-          <BreathWaveformChart samples={samples.slice(-250)} height={120} /> 
+          <LabelMarkersTrack
+            windows={windows}
+            rangeSeconds={liveRangeSeconds}
+            height={44}
+          />
+          <BreathWaveformChart samples={liveSamples} height={120} />
         </div>
       </div>
     </div>
