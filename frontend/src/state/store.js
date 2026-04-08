@@ -8,6 +8,7 @@ import { getWindowSamples } from "../domain/classifier/windowing";
 import { nextLabelWithSustainedLogic } from "../domain/classifier/sustainedLogic";
 import { Label } from "../domain/models/labels";
 import { useSettingsStore } from "./settingsStore";
+import { WebBluetoothSource } from "../services/datasource/WebBluetoothSource";
 
 function makeSessionId() {
   const d = new Date();
@@ -165,7 +166,6 @@ export const useAppStore = create((set, get) => ({
     // Derive thresholds for classifier from cfg
     const thresholds = {
       greenMax: cfg.classification.greenMax,
-      // yellowMax is unused in logic; align to highScore for completeness
       yellowMax: cfg.classification.highScore,
       highScore: cfg.classification.highScore,
       veryHighScore: cfg.classification.veryHighScore,
@@ -174,13 +174,18 @@ export const useAppStore = create((set, get) => ({
       fastRedSeconds: cfg.classification.fastRedSeconds
     };
 
+    const sourceSampleRateHz =
+      cfg.sourceMode === "BLE"
+        ? cfg.ble.sampleRateHz
+        : cfg.simulator.sampleRateHz;
+
     await storage.createSession({
       sessionId,
       startedAt,
       endedAt: null,
       updatedAt: startedAt,
       source: cfg.sourceMode,
-      sampleRateHz: cfg.simulator.sampleRateHz, // for simulator now
+      sampleRateHz: sourceSampleRateHz,
       windowMs: cfg.classification.windowMs,
       stepMs: cfg.classification.stepMs,
       thresholds,
@@ -188,71 +193,135 @@ export const useAppStore = create((set, get) => ({
       summary: null
     });
 
-    const source = new DummySimulatorSource({
-      sampleRateHz: cfg.simulator.sampleRateHz,
-      baseFreqHz: cfg.simulator.baseFreqHz,
-      noise: cfg.simulator.noise,
-      testMode: cfg.simulator.testMode
-    });
+    let source;
 
-    source.onSample = (sample) => {
-      get().pushSample(sample);
-    };
+    try {
+      if (cfg.sourceMode === "BLE") {
+        source = new WebBluetoothSource({
+          serviceUUID: cfg.ble.serviceUUID,
+          characteristicUUID: cfg.ble.characteristicUUID,
+          sampleRateHz: cfg.ble.sampleRateHz,
+          format: cfg.ble.format,
+          littleEndian: cfg.ble.littleEndian
+        });
+      } else {
+        source = new DummySimulatorSource({
+          sampleRateHz: cfg.simulator.sampleRateHz,
+          baseFreqHz: cfg.simulator.baseFreqHz,
+          noise: cfg.simulator.noise,
+          testMode: cfg.simulator.testMode
+        });
+      }
 
-    source.start();
+      source.onSample = (sample) => {
+        get().pushSample(sample);
+      };
 
-    const windowTimer = setInterval(
-      () => {
+      // BLE will open the device chooser here
+      await source.start();
+
+      const windowTimer = setInterval(() => {
         get().computeNextWindow();
-      },
-      Math.max(250, cfg.classification.stepMs)
-    );
+      }, Math.max(250, cfg.classification.stepMs));
 
-    const flushEvery = FLUSH_MS_DEFAULT; // keep simple; could be config.storage later
-    const flushTimer = setInterval(() => {
-      void flushPending(sessionId);
-      void storage.updateSession(sessionId, { updatedAt: Date.now() });
-    }, flushEvery);
-
-    set({
-      _source: source,
-      _windowTimer: windowTimer,
-      _flushTimer: flushTimer
-    });
-
-    // Safe teardown on refresh/close
-    if (!get()._teardownBound) {
-      const onBeforeUnload = () => {
-        try {
-          const sid = get().sessionId;
-          const src = get()._source;
-          if (src) src.stop();
-          void flushPending(sid);
-        } catch (e) {
-          // eslint-disable-next-line no-console
-          console.error("beforeunload teardown error:", e);
-        }
-      };
-
-      const onVisibilityChange = () => {
-        if (document.visibilityState === "hidden") {
-          try {
-            void flushPending(get().sessionId);
-          } catch (e) {
-            // eslint-disable-next-line no-console
-            console.error("visibilitychange flush error:", e);
-          }
-        }
-      };
-
-      window.addEventListener("beforeunload", onBeforeUnload);
-      document.addEventListener("visibilitychange", onVisibilityChange);
+      const flushEvery = FLUSH_MS_DEFAULT;
+      const flushTimer = setInterval(() => {
+        void flushPending(sessionId);
+        void storage.updateSession(sessionId, { updatedAt: Date.now() });
+      }, flushEvery);
 
       set({
-        _teardownBound: true,
-        _onBeforeUnload: onBeforeUnload,
-        _onVisibilityChange: onVisibilityChange
+        _source: source,
+        _windowTimer: windowTimer,
+        _flushTimer: flushTimer
       });
+
+      // Safe teardown on refresh/close
+      if (!get()._teardownBound) {
+        const onBeforeUnload = () => {
+          try {
+            const sid = get().sessionId;
+            const src = get()._source;
+            if (src) src.stop();
+            void flushPending(sid);
+          } catch (e) {
+            // eslint-disable-next-line no-console
+            console.error("beforeunload teardown error:", e);
+          }
+        };
+
+        const onVisibilityChange = () => {
+          if (document.visibilityState === "hidden") {
+            try {
+              void flushPending(get().sessionId);
+            } catch (e) {
+              // eslint-disable-next-line no-console
+              console.error("visibilitychange flush error:", e);
+            }
+          }
+        };
+
+        window.addEventListener("beforeunload", onBeforeUnload);
+        document.addEventListener("visibilitychange", onVisibilityChange);
+
+        set({
+          _teardownBound: true,
+          _onBeforeUnload: onBeforeUnload,
+          _onVisibilityChange: onVisibilityChange
+        });
+      }
+    } catch (error) {
+      if (source) {
+        try {
+          source.stop();
+        } catch (_) {
+          // no-op
+        }
+      }
+
+      set({
+        streaming: false,
+        sessionId: null,
+        startedAt: null,
+        samples: [],
+        lastSample: null,
+        windows: [],
+        lastWindow: null,
+        events: [],
+        currentLabel: Label.GREEN,
+        currentScore: 0,
+        totalSamples: 0,
+        totalWindows: 0,
+        labelSeconds: {
+          [Label.GREEN]: 0,
+          [Label.YELLOW]: 0,
+          [Label.RED]: 0
+        },
+        _streakHigh: 0,
+        _streakVeryHigh: 0,
+        _openEvent: null,
+        _nonRedStreak: 0,
+        _source: null,
+        _windowTimer: null,
+        _flushTimer: null,
+        _cfg: null
+      });
+
+      await storage.updateSession(sessionId, {
+        endedAt: Date.now(),
+        updatedAt: Date.now(),
+        summary: {
+          totalSamples: 0,
+          totalWindows: 0,
+          greenSeconds: 0,
+          yellowSeconds: 0,
+          redSeconds: 0,
+          eventCount: 0,
+          failedToStart: true
+        }
+      });
+
+      throw error;
     }
   },
 
