@@ -13,6 +13,7 @@ export class WebBluetoothSource {
     this._server = null;
     this._char = null;
     this._onNotif = this._handleNotification.bind(this);
+    this._onDisconnected = this._handleDisconnected.bind(this);
     this._running = false;
   }
 
@@ -30,24 +31,40 @@ export class WebBluetoothSource {
       filters: [{ services: [this.serviceUUID] }]
     });
 
-    this._device.addEventListener("gattserverdisconnected", () => {
-      // eslint-disable-next-line no-console
-      console.warn("BLE device disconnected");
-      this.stop(); // clean up local refs
-    });
+    this._device.addEventListener("gattserverdisconnected", this._onDisconnected);
 
-    this._server = await this._device.gatt.connect();
-    const svc = await this._server.getPrimaryService(this.serviceUUID);
-    this._char = await svc.getCharacteristic(this.characteristicUUID);
+    try {
+      if (!this._device.gatt) {
+        throw new Error("Selected BLE device does not expose GATT.");
+      }
 
-    await this._char.startNotifications();
-    this._char.addEventListener("characteristicvaluechanged", this._onNotif);
+      this._server = await this._device.gatt.connect();
+      const svc = await this._server.getPrimaryService(this.serviceUUID);
+      this._char = await svc.getCharacteristic(this.characteristicUUID);
 
-    this._running = true;
+      await this._char.startNotifications();
+      this._char.addEventListener("characteristicvaluechanged", this._onNotif);
+
+      this._running = true;
+    } catch (error) {
+      this.stop();
+      throw error;
+    }
   }
 
   stop() {
     this._running = false;
+
+    try {
+      if (this._device) {
+        this._device.removeEventListener(
+          "gattserverdisconnected",
+          this._onDisconnected
+        );
+      }
+    } catch (_) {
+      // ignore
+    }
 
     try {
       if (this._char) {
@@ -56,7 +73,12 @@ export class WebBluetoothSource {
           this._onNotif
         );
         // Some stacks need explicit stop
-        this._char.stopNotifications?.();
+        if (typeof this._char.stopNotifications === "function") {
+          const stopPromise = this._char.stopNotifications();
+          if (stopPromise && typeof stopPromise.catch === "function") {
+            void stopPromise.catch(() => {});
+          }
+        }
       }
     } catch (_) {
       // ignore
@@ -73,6 +95,12 @@ export class WebBluetoothSource {
     this._char = null;
     this._server = null;
     this._device = null;
+  }
+
+  _handleDisconnected() {
+    // eslint-disable-next-line no-console
+    console.warn("BLE device disconnected");
+    this.stop();
   }
 
   _handleNotification(ev) {
