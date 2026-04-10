@@ -50,6 +50,30 @@ function sanitizeConfig(raw) {
     }
   }
 
+  // BLE
+  if (isObject(raw.ble)) {
+    const b = raw.ble;
+
+    if (typeof b.serviceUUID === "string") {
+      cfg.ble.serviceUUID = b.serviceUUID.trim();
+    }
+    if (typeof b.characteristicUUID === "string") {
+      cfg.ble.characteristicUUID = b.characteristicUUID.trim();
+    }
+    if (typeof b.sampleRateHz === "number") {
+      cfg.ble.sampleRateHz = clampNumber(b.sampleRateHz, {
+        min: 1,
+        max: 200
+      });
+    }
+    if (b.format === "int16" || b.format === "float32") {
+      cfg.ble.format = b.format;
+    }
+    if (typeof b.littleEndian === "boolean") {
+      cfg.ble.littleEndian = b.littleEndian;
+    }
+  }
+
   // Classification
   if (isObject(raw.classification)) {
     const c = raw.classification;
